@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SPECS_DIR="$SCRIPT_DIR/src/specs"
+RUNS_DIR="$SCRIPT_DIR/runs"
+FAILED_DIR="$RUNS_DIR/failed"
+
+MAX_ITERATIONS=5
+SPEC_DIR_OVERRIDE=""
+
+usage() {
+    cat <<EOF
+Usage: ralph run <spec-name> [options]
+
+Options:
+  --max-iterations N   Max attempts (default: 5)
+  --spec-dir PATH      Override specs directory
+  -h, --help           Show this help
+
+Examples:
+  ralph run 00-hello-world
+  ralph run 01-temp-converter --max-iterations 3
+EOF
+}
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+parse_args() {
+    local cmd=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            run)
+                [[ -z "$cmd" ]] || die "unexpected argument: $1"
+                cmd="run"
+                shift
+                ;;
+            --max-iterations)
+                [[ -n "${2:-}" ]] || die "--max-iterations requires a value"
+                MAX_ITERATIONS="$2"
+                shift 2
+                ;;
+            --spec-dir)
+                [[ -n "${2:-}" ]] || die "--spec-dir requires a value"
+                SPEC_DIR_OVERRIDE="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -*)
+                die "unknown flag: $1"
+                ;;
+            *)
+                if [[ -z "$cmd" ]]; then
+                    die "expected 'run' as first argument"
+                fi
+                [[ -z "$SPEC_NAME" ]] || die "unexpected argument: $1"
+                SPEC_NAME="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [[ "$cmd" == "run" ]] || die "expected 'run' subcommand"
+    [[ -n "$SPEC_NAME" ]] || die "spec name required"
+}
+
+build_prompt() {
+    local spec_md="$1"
+    local acceptance_sh="$2"
+    local iteration="$3"
+    local failure_output="${4:-}"
+
+    if [[ "$iteration" -eq 1 ]]; then
+        cat <<PROMPT
+You are a coding agent. Your task is to write a single Python file called solution.py.
+
+Read the spec below to understand what the script should do, and read the acceptance test to understand how you'll be graded.
+
+Write solution.py to the current directory. It must:
+- Be a single file
+- Use \`# /// script\` uv inline metadata for any deps (if needed)
+- Be invocable via: uv run solution.py [args]
+
+After writing solution.py, you're done. Do NOT run the tests yourself.
+
+--- SPEC.md ---
+$(cat "$spec_md")
+
+--- acceptance.sh ---
+$(cat "$acceptance_sh")
+PROMPT
+    else
+        cat <<PROMPT
+Your solution.py failed the acceptance test. Here is the output:
+
+--- failure output ---
+$failure_output
+--- end ---
+
+Fix solution.py and try again. Do NOT run the tests yourself.
+
+For reference, here is the spec and acceptance test again:
+
+--- SPEC.md ---
+$(cat "$spec_md")
+
+--- acceptance.sh ---
+$(cat "$acceptance_sh")
+PROMPT
+    fi
+}
+
+cmd_run() {
+    local specs_dir="$SPECS_DIR"
+    [[ -n "$SPEC_DIR_OVERRIDE" ]] && specs_dir="$SPEC_DIR_OVERRIDE"
+
+    local spec_dir="$specs_dir/$SPEC_NAME"
+    [[ -d "$spec_dir" ]] || die "spec not found: $spec_dir"
+    [[ -f "$spec_dir/SPEC.md" ]] || die "SPEC.md not found in $spec_dir"
+    [[ -f "$spec_dir/acceptance.sh" ]] || die "acceptance.sh not found in $spec_dir"
+
+    local timestamp
+    timestamp=$(date +%Y%m%dT%H%M%S)
+    local work_dir="$RUNS_DIR/${SPEC_NAME}-${timestamp}"
+    mkdir -p "$work_dir"
+
+    # Copy spec contents (not solution.py)
+    cp "$spec_dir/SPEC.md" "$work_dir/"
+    cp "$spec_dir/acceptance.sh" "$work_dir/"
+    chmod +x "$work_dir/acceptance.sh"
+    if [[ -d "$spec_dir/fixtures" ]]; then
+        cp -r "$spec_dir/fixtures" "$work_dir/"
+    fi
+
+    local spec_md="$work_dir/SPEC.md"
+    local acceptance_sh="$work_dir/acceptance.sh"
+
+    echo "Spec:     $SPEC_NAME"
+    echo "Work dir: $work_dir"
+    echo ""
+
+    local passed=false
+    local last_output=""
+
+    for i in $(seq 1 "$MAX_ITERATIONS"); do
+        echo "Iteration $i/$MAX_ITERATIONS — invoking pi..."
+
+        local prompt
+        if [[ "$i" -eq 1 ]]; then
+            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i")
+        else
+            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i" "$last_output")
+        fi
+
+        # Invoke pi from the working directory
+        (cd "$work_dir" && pi -p "$prompt" -nc --no-extensions --no-session -a) || true
+
+        echo "pi finished. Running acceptance.sh..."
+
+        # Run acceptance test, capture output
+        last_output=""
+        local exit_code=0
+        last_output=$(cd "$work_dir" && bash acceptance.sh 2>&1) || exit_code=$?
+
+        # Print the test output indented
+        echo "$last_output" | sed 's/^/  /'
+        echo ""
+
+        if [[ "$exit_code" -eq 0 ]]; then
+            passed=true
+            echo "✓ PASS ($i iteration(s))"
+            # Clean up working copy
+            rm -rf "$work_dir"
+            echo "Cleaned up $work_dir"
+            exit 0
+        fi
+    done
+
+    # All iterations exhausted
+    echo "✗ FAIL ($MAX_ITERATIONS iterations exhausted)"
+
+    # Move to failed directory
+    mkdir -p "$FAILED_DIR"
+    mv "$work_dir" "$FAILED_DIR/"
+    echo "Working copy saved to $FAILED_DIR/${SPEC_NAME}-${timestamp}/"
+
+    exit 1
+}
+
+# --- main ---
+
+SPEC_NAME=""
+parse_args "$@"
+
+cmd_run
