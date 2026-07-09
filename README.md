@@ -34,14 +34,14 @@ Each spec is a directory under `src/specs/`:
 
 When you run `ralph`:
 
-1. Copies the spec into a working directory under `runs/`
+1. Copies the spec into a temporary working directory
 2. Sends SPEC.md + acceptance.sh to **pi** (the coding agent)
 3. pi writes `solution.py`
 4. ralph runs `bash acceptance.sh` to grade it
 5. If it fails, the failure output is fed back to pi and it tries again
 6. Up to 5 iterations (configurable)
 
-On **pass**, the working copy is deleted. On **fail**, it's saved to `runs/failed/` so you can inspect what pi produced.
+On **pass** or **fail**, artifacts are saved to NAS at `/mnt/nas/specs/<uuid>/` and the temp directory is cleaned up.
 
 ## CLI
 
@@ -61,6 +61,19 @@ Examples:
 ./ralph run 01-temp-converter --max-iterations 3
 ./ralph run 02-wordcount --spec-dir ~/my-specs
 ```
+
+## Run Storage
+
+Both successful and failed spec runs are saved to NAS storage at `/mnt/nas/specs/<UUID>/` where UUID is formatted as `<spec_name>_<model_name>_<timestamp>`.
+
+Each run includes:
+- `metadata.json` - Structured run metadata
+- `code/solution.py` - Generated Python solution file
+- `logs/session.log` - Complete JSONL session transcript from the AI agent
+
+Failed runs additionally include:
+- `logs/acceptance.log` - The final acceptance test output
+- `<spec>_<model>_<ts>_failed.json` - Failure manifest with context
 
 ## Available Specs
 
@@ -82,7 +95,6 @@ ralph run 00-hello-world
 ```
 specs-project/
 ├── src/specs/       # the spec ladder
-├── runs/            # active & failed working copies
 ├── ralph            # the CLI runner
 └── README.md
 ```

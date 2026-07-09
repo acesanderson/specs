@@ -3,8 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPECS_DIR="$SCRIPT_DIR/src/specs"
-RUNS_DIR="$SCRIPT_DIR/runs"
-FAILED_DIR="$RUNS_DIR/failed"
+NAS_STORAGE_PATH="/mnt/nas"
 
 MAX_ITERATIONS=5
 SPEC_DIR_OVERRIDE=""
@@ -124,8 +123,11 @@ cmd_run() {
 
     local timestamp
     timestamp=$(date +%Y%m%dT%H%M%S)
-    local work_dir="$RUNS_DIR/${SPEC_NAME}-${timestamp}"
-    mkdir -p "$work_dir"
+    local work_dir
+    work_dir=$(mktemp -d)
+
+    local model_name="alphablue"
+    local uuid="${SPEC_NAME}_${model_name}_${timestamp}"
 
     # Copy spec contents (not solution.py)
     cp "$spec_dir/SPEC.md" "$work_dir/"
@@ -155,8 +157,17 @@ cmd_run() {
             prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i" "$last_output")
         fi
 
-        # Invoke pi from the working directory
-        (cd "$work_dir" && pi -p "$prompt" -nc --no-extensions --no-session -a) || true
+        # Invoke pi from the working directory with logging
+        (cd "$work_dir" && pi -p "$prompt" -nc --no-extensions -a) > "$work_dir/pi_output.log" 2>&1 || true
+        
+        # Save session data for replay
+        if [[ -d ~/.pi/agent/sessions ]]; then
+            # Create a timestamped session directory
+            SESSION_DIR="$work_dir/session_$(date +%Y%m%d_%H%M%S)"
+            mkdir -p "$SESSION_DIR"
+            # Copy session data
+            cp -r ~/.pi/agent/sessions/* "$SESSION_DIR/" 2>/dev/null || true
+        fi
 
         echo "pi finished. Running acceptance.sh..."
 
@@ -172,9 +183,8 @@ cmd_run() {
         if [[ "$exit_code" -eq 0 ]]; then
             passed=true
             echo "✓ PASS ($i iteration(s))"
-            # Clean up working copy
+            save_to_nas "$SPEC_NAME" "$model_name" "$timestamp" "$uuid" "$i" "$work_dir" "success" 0 ""
             rm -rf "$work_dir"
-            echo "Cleaned up $work_dir"
             exit 0
         fi
     done
@@ -182,12 +192,102 @@ cmd_run() {
     # All iterations exhausted
     echo "✗ FAIL ($MAX_ITERATIONS iterations exhausted)"
 
-    # Move to failed directory
-    mkdir -p "$FAILED_DIR"
-    mv "$work_dir" "$FAILED_DIR/"
-    echo "Working copy saved to $FAILED_DIR/${SPEC_NAME}-${timestamp}/"
+    # Save failed run to NAS
+    save_to_nas "$SPEC_NAME" "$model_name" "$timestamp" "$uuid" "$MAX_ITERATIONS" "$work_dir" "failed" "$exit_code" "$last_output"
+
+    # Clean up temp directory
+    rm -rf "$work_dir"
 
     exit 1
+}
+
+save_to_nas() {
+    local spec_name="$1"
+    local model_name="$2"
+    local timestamp="$3"
+    local uuid="$4"
+    local iterations="$5"
+    local work_dir="$6"
+    local status="$7"
+    local exit_code="$8"
+    local failure_output="${9:-}"
+
+    local nas_storage_dir="$NAS_STORAGE_PATH/specs/$uuid"
+    mkdir -p "$nas_storage_dir"
+    mkdir -p "$nas_storage_dir/code"
+    mkdir -p "$nas_storage_dir/logs"
+
+    # Save solution.py
+    if [[ -f "$work_dir/solution.py" ]]; then
+        cp "$work_dir/solution.py" "$nas_storage_dir/code/"
+    fi
+
+    # Save session log (full JSONL transcript)
+    local session_dir_name
+    session_dir_name=$(echo "$work_dir" | sed 's|^/||; s|/|-|g')
+    session_dir_name="--${session_dir_name}--"
+    local session_dir="$HOME/.pi/agent/sessions/$session_dir_name"
+    local session_jsonl=""
+    if [[ -d "$session_dir" ]]; then
+        session_jsonl=$(ls "$session_dir"/*.jsonl 2>/dev/null | head -1)
+    fi
+    if [[ -n "$session_jsonl" && -f "$session_jsonl" ]]; then
+        cp "$session_jsonl" "$nas_storage_dir/logs/session.log"
+    elif [[ -f "$work_dir/pi_output.log" ]]; then
+        cp "$work_dir/pi_output.log" "$nas_storage_dir/logs/session.log"
+    fi
+
+    # Escape failure output for JSON (newlines and quotes)
+    local escaped_output=""
+    if [[ -n "$failure_output" ]]; then
+        escaped_output=$(printf '%s' "$failure_output" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()), end="")')
+    fi
+
+    # Save metadata.json
+    local metadata
+    metadata=$(python3 -c "
+import json, sys
+data = {
+    'spec_name': sys.argv[1],
+    'model_name': sys.argv[2],
+    'timestamp': sys.argv[3],
+    'status': sys.argv[4],
+    'iterations': int(sys.argv[5]),
+    'exit_code': int(sys.argv[6])
+}
+if sys.argv[4] == 'failed' and sys.argv[7]:
+    data['failure_output'] = json.loads(sys.argv[7])
+print(json.dumps(data, indent=2))
+" "$spec_name" "$model_name" "$timestamp" "$status" "$iterations" "$exit_code" "$escaped_output")
+    echo "$metadata" > "$nas_storage_dir/metadata.json"
+
+    # Save failure manifest for failed runs
+    if [[ "$status" == "failed" ]]; then
+        # Save acceptance.log with the last failure output
+        echo "$last_output" > "$nas_storage_dir/logs/acceptance.log"
+
+        # Create failure manifest
+        local manifest
+        manifest=$(python3 -c "
+import json, sys
+manifest = {
+    'spec_name': sys.argv[1],
+    'model_name': sys.argv[2],
+    'timestamp': sys.argv[3],
+    'status': 'failed',
+    'iterations_attempted': int(sys.argv[5]),
+    'final_exit_code': int(sys.argv[6]),
+    'failure_output': sys.argv[7] if sys.argv[7] else '',
+    'solution_file': 'code/solution.py',
+    'session_log': 'logs/session.log',
+    'acceptance_log': 'logs/acceptance.log'
+}
+print(json.dumps(manifest, indent=2))
+" "$spec_name" "$model_name" "$timestamp" "$timestamp" "$iterations" "$exit_code" "$failure_output")
+        echo "$manifest" > "$nas_storage_dir/${spec_name}_${model_name}_${timestamp}_failed.json"
+    fi
+
+    echo "Artifacts saved to NAS: $nas_storage_dir"
 }
 
 # --- main ---
