@@ -126,7 +126,18 @@ cmd_run() {
     local work_dir
     work_dir=$(mktemp -d)
 
-    local model_name="alphablue"
+    local model_name="unknown"
+    if [[ -f "$HOME/.custom_functions" ]]; then
+        # shellcheck source=~/.custom_functions
+        source "$HOME/.custom_functions"
+        local active_output
+        active_output=$(active 2>/dev/null) || true
+        if [[ "$active_output" == no\ model\ loaded* ]]; then
+            model_name="unknown"
+        else
+            model_name=$(echo "$active_output" | sed 's/^[^:]*: //')
+        fi
+    fi
     local uuid="${SPEC_NAME}_${model_name}_${timestamp}"
 
     # Copy spec contents (not solution.py)
