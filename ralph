@@ -70,10 +70,31 @@ build_prompt() {
     local spec_md="$1"
     local acceptance_sh="$2"
     local iteration="$3"
-    local failure_output="${4:-}"
+    local is_project="${4:-false}"
+    local failure_output="${5:-}"
 
     if [[ "$iteration" -eq 1 ]]; then
-        cat <<PROMPT
+        if [[ "$is_project" == "true" ]]; then
+            cat <<PROMPT
+You are a coding agent. Your task is to implement a Python project.
+
+A scaffold directory has been provided with the project skeleton. Read the spec below to understand what to build, and read the acceptance test to understand how you'll be graded.
+
+Fill in the implementation. You may:
+- Create new files as needed
+- Modify existing scaffold files (e.g. pyproject.toml)
+- Add dependencies
+
+After implementing, you're done. Do NOT run the tests yourself.
+
+--- SPEC.md ---
+$(cat "$spec_md")
+
+--- acceptance.sh ---
+$(cat "$acceptance_sh")
+PROMPT
+        else
+            cat <<PROMPT
 You are a coding agent. Your task is to write a single Python file called solution.py.
 
 Read the spec below to understand what the script should do, and read the acceptance test to understand how you'll be graded.
@@ -91,15 +112,16 @@ $(cat "$spec_md")
 --- acceptance.sh ---
 $(cat "$acceptance_sh")
 PROMPT
+        fi
     else
         cat <<PROMPT
-Your solution.py failed the acceptance test. Here is the output:
+Your implementation failed the acceptance test. Here is the output:
 
 --- failure output ---
 $failure_output
 --- end ---
 
-Fix solution.py and try again. Do NOT run the tests yourself.
+Fix the issue and try again. Do NOT run the tests yourself.
 
 For reference, here is the spec and acceptance test again:
 
@@ -147,11 +169,18 @@ cmd_run() {
     if [[ -d "$spec_dir/fixtures" ]]; then
         cp -r "$spec_dir/fixtures" "$work_dir/"
     fi
+    if [[ -d "$spec_dir/scaffold" ]]; then
+        cp -a "$spec_dir/scaffold/." "$work_dir/"
+    fi
 
     local spec_md="$work_dir/SPEC.md"
     local acceptance_sh="$work_dir/acceptance.sh"
 
+    local is_project="false"
+    [[ -d "$spec_dir/scaffold" ]] && is_project="true"
+
     echo "Spec:     $SPEC_NAME"
+    echo "Type:     $([ "$is_project" = "true" ] && echo "project" || echo "single-file")"
     echo "Work dir: $work_dir"
     echo ""
 
@@ -163,9 +192,9 @@ cmd_run() {
 
         local prompt
         if [[ "$i" -eq 1 ]]; then
-            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i")
+            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i" "$is_project")
         else
-            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i" "$last_output")
+            prompt=$(build_prompt "$spec_md" "$acceptance_sh" "$i" "$is_project" "$last_output")
         fi
 
         # Invoke pi from the working directory with logging
@@ -228,9 +257,21 @@ save_to_nas() {
     mkdir -p "$nas_storage_dir/code"
     mkdir -p "$nas_storage_dir/logs"
 
-    # Save solution.py
+    # Save code artifacts
+    mkdir -p "$nas_storage_dir/code"
     if [[ -f "$work_dir/solution.py" ]]; then
         cp "$work_dir/solution.py" "$nas_storage_dir/code/"
+    fi
+    # For project specs, save scaffold tree (excluding spec metadata)
+    if [[ -d "$work_dir/scaffold" ]] || [[ -f "$work_dir/pyproject.toml" ]]; then
+        for item in "$work_dir"/*; do
+            local name
+            name=$(basename "$item")
+            case "$name" in
+                SPEC.md|acceptance.sh|fixtures|solution.py|pi_output.log|session_*) continue ;;
+                *) cp -a "$item" "$nas_storage_dir/code/" ;;
+            esac
+        done
     fi
 
     # Save session log (full JSONL transcript)

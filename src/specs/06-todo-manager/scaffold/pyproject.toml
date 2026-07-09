@@ -1,0 +1,9 @@
+[project]
+name = "todo"
+version = "0.1.0"
+description = "A simple task manager"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+todo = "todo.cli:main"

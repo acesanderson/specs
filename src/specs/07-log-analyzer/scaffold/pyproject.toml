@@ -1,0 +1,9 @@
+[project]
+name = "loganalyzer"
+version = "0.1.0"
+description = "A structured log analyzer"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+loganalyzer = "loganalyzer.cli:main"

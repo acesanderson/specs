@@ -26,11 +26,26 @@ cd specs-project
 Each spec is a directory under `src/specs/`:
 
 ```
-00-hello-world/
-├── SPEC.md          # what the agent should build
-├── acceptance.sh    # the grader (exit 0 = pass)
-└── fixtures/        # (optional) input files
+00-hello-world/          (single-file spec)
+├── SPEC.md
+├── acceptance.sh
+└── fixtures/            (optional)
+
+08-json-api/             (project spec)
+├── SPEC.md
+├── acceptance.sh
+├── fixtures/            (optional)
+└── scaffold/            (optional — makes it a project spec)
+    ├── pyproject.toml
+    ├── src/
+    │   └── jsonapi/
+    │       └── __init__.py
+    └── tests/
 ```
+
+**Single-file specs** (no `scaffold/`): pi writes `solution.py`, a single Python file.
+
+**Project specs** (has `scaffold/`): pi fills in the project skeleton — modifying `pyproject.toml`, adding source files, writing tests, etc.
 
 When you run `ralph`:
 
@@ -77,11 +92,16 @@ Failed runs additionally include:
 
 ## Available Specs
 
-| Spec | Difficulty | Tests |
-|---|---|---|
-| `00-hello-world` | Trivial | Pipeline heartbeat — prints "Hello, world!" |
-| `01-temp-converter` | Easy | Arg parsing, arithmetic, error handling |
-| `02-wordcount` | Medium | File I/O, JSON output, sorting, tokenization |
+| Spec | Type | Difficulty | Tests |
+|---|---|---|---|
+| `00-hello-world` | single-file | Trivial | Pipeline heartbeat — prints "Hello, world!" |
+| `01-temp-converter` | single-file | Easy | Arg parsing, arithmetic, error handling |
+| `02-wordcount` | single-file | Medium | File I/O, JSON output, sorting, tokenization |
+| `03-args-parser` | single-file | Medium | Hand-rolled CLI parser, flags, positionals, `--` separator |
+| `04-csv-filter` | single-file | Medium | CSV parsing, filtering, structured I/O |
+| `05-expression-eval` | single-file | Hard | Arithmetic parser, precedence, parens, unary minus |
+| `06-todo-manager` | project | Hard | Subcommands, persistent JSON state, file I/O across invocations |
+| `07-log-analyzer` | project | Hard | Log parsing, time-bucket aggregation, structured JSON report |
 
 ## Global Install (optional)
 
@@ -104,7 +124,8 @@ specs-project/
 See the meta-spec in `src/specs/` (or the Dark Factory - Test Specs document) for the full contract. The short version:
 
 1. Create `src/specs/NN-name/` with `SPEC.md` and `acceptance.sh`
-2. Write a reference `solution.py`, run `acceptance.sh` until it passes
-3. Delete `solution.py` before handoff
+2. Write a reference implementation, run `acceptance.sh` until it passes
+3. Delete the implementation before handoff
+4. For **project specs**: add a `scaffold/` directory with the project skeleton. Copy the scaffold contents (not the `scaffold/` directory itself) into your working dir and verify acceptance.sh works before deleting the implementation.
 
 The difficulty ladder has five knobs: assertion count, CLI surface complexity, statefulness, I/O format, and algorithmic content. Each new spec should differ from its neighbors on at least one knob.
